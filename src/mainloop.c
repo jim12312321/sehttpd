@@ -69,11 +69,7 @@ static int sock_set_non_blocking(int fd)
     return 0;
 }
 
-/* TODO: use command line options to specify */
-#define PORT 8081
-#define WEBROOT "./www"
-
-int main()
+int main(int argc, char *argv[])
 {
     /* when a fd is closed by remote, writing to this fd will cause system
      * send SIGPIPE to this process, which exit the program
@@ -84,8 +80,48 @@ int main()
         log_err("Failed to install sigal handler for SIGPIPE");
         return 0;
     }
+    /* handling the params
+     * -t: select level trigger or edge trigger.
+     *     If level trigger type l for level trigger otherwise type e for edge
+     * trigger. default edge trigger -p: enter PORT,default 8081 -w: enter
+     * webroot,default ./www
+     */
+    int port = 8081;
+    int trigger = EPOLLET;
+    char *webroot = "./www";
+    if (!(argc & 1)) { /* if argc is even,user must forget enter some params */
+        log_err("Failed due to missing params");
+        return 0;
+    }
+    for (int idx = 1; idx < argc; idx += 2) {
+        if (strcmp(argv[idx], "-t") == 0) {        /* trigger mode */
+            if (strcmp(argv[idx + 1], "l") == 0) { /* level trigger */
+                trigger = 0;
+            } else if (strcmp(argv[idx + 1], "e") == 0) { /* edge trigger */
+                trigger = EPOLLET;
+            } else { /* error */
+                log_err("Failed due to incorrect param \"-t\"");
+                return 0;
+            }
+        } else if (strcmp(argv[idx], "-p") == 0) { /* port */
+            port = atoi(argv[idx + 1]);
+            if (port == 0) {
+                log_err("Failed due to incorrect param \"-p\"");
+                return 0;
+            }
+        } else if (strcmp(argv[idx], "-w") == 0) { /* webroot */
+            if (strcmp(argv[idx + 1], "-t") == 0 ||
+                strcmp(argv[idx + 1], "-p") == 0) {
+                log_err("Failed due to incorrect param \"-w\"");
+                return 0;
+            }
+            /* TODO: figure out what is webroot for and set exception handling
+             * correctly */
+            webroot = argv[idx + 1];
+        }
+    }
 
-    int listenfd = open_listenfd(PORT);
+    int listenfd = open_listenfd(port);
     int rc UNUSED = sock_set_non_blocking(listenfd);
     assert(rc == 0 && "sock_set_non_blocking");
 
@@ -97,7 +133,7 @@ int main()
     assert(events && "epoll_event: malloc");
 
     http_request_t *request = malloc(sizeof(http_request_t));
-    init_http_request(request, listenfd, epfd, WEBROOT);
+    init_http_request(request, listenfd, epfd, webroot);
 
     struct epoll_event event = {
         .data.ptr = request,
@@ -144,9 +180,9 @@ int main()
                         break;
                     }
 
-                    init_http_request(request, infd, epfd, WEBROOT);
+                    init_http_request(request, infd, epfd, webroot);
                     event.data.ptr = request;
-                    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+                    event.events = EPOLLIN | trigger | EPOLLONESHOT;
                     epoll_ctl(epfd, EPOLL_CTL_ADD, infd, &event);
 
                     add_timer(request, TIMEOUT_DEFAULT, http_close_conn);
