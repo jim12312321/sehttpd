@@ -118,6 +118,9 @@ int main(int argc, char *argv[])
             /* TODO: figure out what is webroot for and set exception handling
              * correctly */
             webroot = argv[idx + 1];
+        } else {
+            log_err("Failed due to undefined param \"%s\"", argv[idx]);
+            return 0;
         }
     }
 
