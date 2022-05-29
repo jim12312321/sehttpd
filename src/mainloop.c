@@ -140,7 +140,7 @@ int main(int argc, char *argv[])
 
     struct epoll_event event = {
         .data.ptr = request,
-        .events = EPOLLIN | EPOLLET,
+        .events = EPOLLIN | trigger,
     };
     epoll_ctl(epfd, EPOLL_CTL_ADD, listenfd, &event);
 

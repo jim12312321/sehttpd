@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -34,6 +35,24 @@ static ssize_t writen(int fd, void *usrbuf, size_t n)
             }
         }
         bufp += nwritten;
+    }
+
+    return n;
+}
+static ssize_t do_sendfile(int out_fd, int in_fd, off_t *offset, size_t n)
+{
+    ssize_t nsend;
+
+    for (size_t nleft = n; nleft > 0; nleft -= nsend) {
+        if ((nsend = sendfile(out_fd, in_fd, *offset, nleft)) <= 0) {
+            if (errno == EINTR) /* interrupted by sig handler return */
+                nsend = 0;      /* and call sendfile() again */
+            else {
+                log_err("errno == %d\n", errno);
+                return -1; /* errrno set by sendfile() */
+            }
+        }
+        *offset += nsend;
     }
 
     return n;
@@ -193,16 +212,14 @@ static void serve_static(int fd,
     if (!out->modified)
         return;
 
-    int srcfd = open(filename, O_RDONLY, 0);
+    int srcfd = open(filename, O_RDWR, 0);
     assert(srcfd > 2 && "open error");
-    /* TODO: use sendfile(2) for zero-copy support */
-    char *srcaddr = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
-    assert(srcaddr != (void *) -1 && "mmap error");
+
+    off_t offset = 0;
+
+    do_sendfile(fd, srcfd, &offset, filesize);
+
     close(srcfd);
-
-    writen(fd, srcaddr, filesize);
-
-    munmap(srcaddr, filesize);
 }
 
 static inline int init_http_out(http_out_t *o, int fd)
