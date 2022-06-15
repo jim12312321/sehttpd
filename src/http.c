@@ -39,24 +39,6 @@ static ssize_t writen(int fd, void *usrbuf, size_t n)
 
     return n;
 }
-static ssize_t do_sendfile(int out_fd, int in_fd, off_t *offset, size_t n)
-{
-    ssize_t nsend;
-
-    for (size_t nleft = n; nleft > 0; nleft -= nsend) {
-        if ((nsend = sendfile(out_fd, in_fd, *offset, nleft)) <= 0) {
-            if (errno == EINTR) /* interrupted by sig handler return */
-                nsend = 0;      /* and call sendfile() again */
-            else {
-                log_err("errno == %d\n", errno);
-                return -1; /* errrno set by sendfile() */
-            }
-        }
-        *offset += nsend;
-    }
-
-    return n;
-}
 
 static char *webroot = NULL;
 
@@ -217,7 +199,7 @@ static void serve_static(int fd,
 
     off_t offset = 0;
 
-    do_sendfile(fd, srcfd, &offset, filesize);
+    sendfile(fd, srcfd, &offset, filesize);
 
     close(srcfd);
 }
