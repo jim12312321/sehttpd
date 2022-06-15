@@ -34,222 +34,234 @@ int http_parse_request_line(http_request_t *r)
         s_spaces_after_digit,
         s_almost_done
     } state;
-
+    // cppcheck-suppress syntaxError
+    static const void *dispatch_table[] = {&&t_start,
+                                           &&t_method,
+                                           &&t_spaces_before_uri,
+                                           &&t_after_slash_in_uri,
+                                           &&t_http,
+                                           &&t_http_H,
+                                           &&t_http_HT,
+                                           &&t_http_HTT,
+                                           &&t_http_HTTP,
+                                           &&t_first_major_digit,
+                                           &&t_major_digit,
+                                           &&t_first_minor_digit,
+                                           &&t_minor_digit,
+                                           &&t_spaces_after_digit,
+                                           &&t_almost_done};
+#define DISPATCH()                             \
+    do {                                       \
+        pi++;                                  \
+        if (pi >= r->last)                     \
+            goto again;                        \
+        p = (uint8_t *) &r->buf[pi % MAX_BUF]; \
+        ch = *p;                               \
+        goto *dispatch_table[state];           \
+    } while (0)
+    pi = r->pos--;
     state = r->state;
+    DISPATCH();
 
-    for (pi = r->pos; pi < r->last; pi++) {
-        p = (uint8_t *) &r->buf[pi % MAX_BUF];
-        ch = *p;
+/* HTTP methods: GET, HEAD, POST */
+t_start:
+    r->request_start = p;
 
-        /* TODO: use computed goto for efficient dispatching */
-        switch (state) {
-        /* HTTP methods: GET, HEAD, POST */
-        case s_start:
-            r->request_start = p;
+    if (ch == CR || ch == LF)
+        DISPATCH();
 
-            if (ch == CR || ch == LF)
-                break;
+    if ((ch < 'A' || ch > 'Z') && ch != '_')
+        return HTTP_PARSER_INVALID_METHOD;
 
-            if ((ch < 'A' || ch > 'Z') && ch != '_')
-                return HTTP_PARSER_INVALID_METHOD;
+    state = s_method;
+    DISPATCH();
 
-            state = s_method;
-            break;
+t_method:
+    if (ch == ' ') {
+        m = r->request_start;
 
-        case s_method:
-            if (ch == ' ') {
-                m = r->request_start;
-
-                switch (p - m) {
-                case 3:
-                    if (cst_strcmp(m, 'G', 'E', 'T', ' ')) {
-                        r->method = HTTP_GET;
-                        break;
-                    }
-                    break;
-
-                case 4:
-                    if (cst_strcmp(m, 'P', 'O', 'S', 'T')) {
-                        r->method = HTTP_POST;
-                        break;
-                    }
-
-                    if (cst_strcmp(m, 'H', 'E', 'A', 'D')) {
-                        r->method = HTTP_HEAD;
-                        break;
-                    }
-                    break;
-
-                default:
-                    r->method = HTTP_UNKNOWN;
-                    break;
-                }
-                state = s_spaces_before_uri;
-                break;
-            }
-
-            if ((ch < 'A' || ch > 'Z') && ch != '_')
-                return HTTP_PARSER_INVALID_METHOD;
-            break;
-
-        /* space* before URI */
-        case s_spaces_before_uri:
-            if (ch == '/') {
-                r->uri_start = p;
-                state = s_after_slash_in_uri;
-                break;
-            }
-
-            switch (ch) {
-            case ' ':
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        case s_after_slash_in_uri:
-            switch (ch) {
-            case ' ':
-                r->uri_end = p;
-                state = s_http;
-                break;
-            default:
+        switch (p - m) {
+        case 3:
+            if (cst_strcmp(m, 'G', 'E', 'T', ' ')) {
+                r->method = HTTP_GET;
                 break;
             }
             break;
 
-        /* space+ after URI */
-        case s_http:
-            switch (ch) {
-            case ' ':
-                break;
-            case 'H':
-                state = s_http_H;
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        case s_http_H:
-            switch (ch) {
-            case 'T':
-                state = s_http_HT;
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        case s_http_HT:
-            switch (ch) {
-            case 'T':
-                state = s_http_HTT;
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        case s_http_HTT:
-            switch (ch) {
-            case 'P':
-                state = s_http_HTTP;
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        case s_http_HTTP:
-            switch (ch) {
-            case '/':
-                state = s_first_major_digit;
-                break;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
-            break;
-
-        /* first digit of major HTTP version */
-        case s_first_major_digit:
-            if (ch < '1' || ch > '9')
-                return HTTP_PARSER_INVALID_REQUEST;
-
-            r->http_major = ch - '0';
-            state = s_major_digit;
-            break;
-
-        /* major HTTP version or dot */
-        case s_major_digit:
-            if (ch == '.') {
-                state = s_first_minor_digit;
+        case 4:
+            if (cst_strcmp(m, 'P', 'O', 'S', 'T')) {
+                r->method = HTTP_POST;
                 break;
             }
 
-            if (ch < '0' || ch > '9')
-                return HTTP_PARSER_INVALID_REQUEST;
-
-            r->http_major = r->http_major * 10 + ch - '0';
-            break;
-
-        /* first digit of minor HTTP version */
-        case s_first_minor_digit:
-            if (ch < '0' || ch > '9')
-                return HTTP_PARSER_INVALID_REQUEST;
-
-            r->http_minor = ch - '0';
-            state = s_minor_digit;
-            break;
-
-        /* minor HTTP version or end of request line */
-        case s_minor_digit:
-            if (ch == CR) {
-                state = s_almost_done;
+            if (cst_strcmp(m, 'H', 'E', 'A', 'D')) {
+                r->method = HTTP_HEAD;
                 break;
-            }
-
-            if (ch == LF)
-                goto done;
-
-            if (ch == ' ') {
-                state = s_spaces_after_digit;
-                break;
-            }
-
-            if (ch < '0' || ch > '9')
-                return HTTP_PARSER_INVALID_REQUEST;
-
-            r->http_minor = r->http_minor * 10 + ch - '0';
-            break;
-
-        case s_spaces_after_digit:
-            switch (ch) {
-            case ' ':
-                break;
-            case CR:
-                state = s_almost_done;
-                break;
-            case LF:
-                goto done;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
             }
             break;
 
-        /* end of request line */
-        case s_almost_done:
-            r->request_end = p - 1;
-            switch (ch) {
-            case LF:
-                goto done;
-            default:
-                return HTTP_PARSER_INVALID_REQUEST;
-            }
+        default:
+            r->method = HTTP_UNKNOWN;
+            break;
         }
+        state = s_spaces_before_uri;
+        DISPATCH();
     }
 
+    if ((ch < 'A' || ch > 'Z') && ch != '_')
+        return HTTP_PARSER_INVALID_METHOD;
+    DISPATCH();
+
+/* space* before URI */
+t_spaces_before_uri:
+    if (ch == '/') {
+        r->uri_start = p;
+        state = s_after_slash_in_uri;
+        DISPATCH();
+    }
+
+    if (ch != ' ')
+        return HTTP_PARSER_INVALID_REQUEST;
+
+    DISPATCH();
+
+t_after_slash_in_uri:
+    if (ch == ' ') {
+        r->uri_end = p;
+        state = s_http;
+    }
+    DISPATCH();
+
+/* space+ after URI */
+t_http:
+    switch (ch) {
+    case ' ':
+        break;
+    case 'H':
+        state = s_http_H;
+        break;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+t_http_H:
+    switch (ch) {
+    case 'T':
+        state = s_http_HT;
+        break;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+t_http_HT:
+    switch (ch) {
+    case 'T':
+        state = s_http_HTT;
+        break;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+t_http_HTT:
+    switch (ch) {
+    case 'P':
+        state = s_http_HTTP;
+        break;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+t_http_HTTP:
+    switch (ch) {
+    case '/':
+        state = s_first_major_digit;
+        break;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+/* first digit of major HTTP version */
+t_first_major_digit:
+    if (ch < '1' || ch > '9')
+        return HTTP_PARSER_INVALID_REQUEST;
+
+    r->http_major = ch - '0';
+    state = s_major_digit;
+    DISPATCH();
+
+/* major HTTP version or dot */
+t_major_digit:
+    if (ch == '.') {
+        state = s_first_minor_digit;
+        DISPATCH();
+    }
+
+    if (ch < '0' || ch > '9')
+        return HTTP_PARSER_INVALID_REQUEST;
+
+    r->http_major = r->http_major * 10 + ch - '0';
+    DISPATCH();
+
+/* first digit of minor HTTP version */
+t_first_minor_digit:
+    if (ch < '0' || ch > '9')
+        return HTTP_PARSER_INVALID_REQUEST;
+
+    r->http_minor = ch - '0';
+    state = s_minor_digit;
+    DISPATCH();
+
+/* minor HTTP version or end of request line */
+t_minor_digit:
+    if (ch == CR) {
+        state = s_almost_done;
+        DISPATCH();
+    }
+
+    if (ch == LF)
+        goto done;
+
+    if (ch == ' ') {
+        state = s_spaces_after_digit;
+        DISPATCH();
+    }
+
+    if (ch < '0' || ch > '9')
+        return HTTP_PARSER_INVALID_REQUEST;
+
+    r->http_minor = r->http_minor * 10 + ch - '0';
+    DISPATCH();
+
+t_spaces_after_digit:
+    switch (ch) {
+    case ' ':
+        break;
+    case CR:
+        state = s_almost_done;
+        break;
+    case LF:
+        goto done;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+    DISPATCH();
+
+/* end of request line */
+t_almost_done:
+    r->request_end = p - 1;
+    switch (ch) {
+    case LF:
+        goto done;
+    default:
+        return HTTP_PARSER_INVALID_REQUEST;
+    }
+
+again:
     r->pos = pi;
     r->state = state;
 
@@ -285,98 +297,106 @@ int http_parse_request_body(http_request_t *r)
     state = r->state;
     assert(state == 0 && "state should be 0");
 
+    static const void *dispatch_table[] = {&&t_start,
+                                           &&t_key,
+                                           &&t_spaces_before_colon,
+                                           &&t_spaces_after_colon,
+                                           &&t_value,
+                                           &&t_cr,
+                                           &&t_crlf,
+                                           &&t_crlfcr};
+#define DISPATCH()                             \
+    do {                                       \
+        pi++;                                  \
+        if (pi >= r->last)                     \
+            goto again;                        \
+        p = (uint8_t *) &r->buf[pi % MAX_BUF]; \
+        ch = *p;                               \
+        goto *dispatch_table[state];           \
+    } while (0)
+    pi = r->pos--;
+    DISPATCH();
+
     http_header_t *hd;
-    for (pi = r->pos; pi < r->last; pi++) {
-        p = (uint8_t *) &r->buf[pi % MAX_BUF];
-        ch = *p;
 
-        switch (state) {
-        case s_start:
-            if (ch == CR || ch == LF)
-                break;
+t_start:
+    if (ch != CR && ch != LF) {
+        r->cur_header_key_start = p;
+        state = s_key;
+    }
+    DISPATCH();
 
-            r->cur_header_key_start = p;
-            state = s_key;
-            break;
+t_key:
+    if (ch == ' ') {
+        r->cur_header_key_end = p;
+        state = s_spaces_before_colon;
+    } else if (ch == ':') {
+        r->cur_header_key_end = p;
+        state = s_spaces_after_colon;
+    }
+    DISPATCH();
 
-        case s_key:
-            if (ch == ' ') {
-                r->cur_header_key_end = p;
-                state = s_spaces_before_colon;
-                break;
-            }
+t_spaces_before_colon:
+    switch (ch) {
+    case ':':
+        state = s_spaces_after_colon;
+    case ' ':
+        break;
+    default:
+        return HTTP_PARSER_INVALID_HEADER;
+    }
+    DISPATCH();
 
-            if (ch == ':') {
-                r->cur_header_key_end = p;
-                state = s_spaces_after_colon;
-                break;
-            }
-            break;
+t_spaces_after_colon:
+    if (ch != ' ') {
+        state = s_value;
+        r->cur_header_value_start = p;
+    }
+    DISPATCH();
 
-        case s_spaces_before_colon:
-            if (ch == ' ')
-                break;
-            if (ch == ':') {
-                state = s_spaces_after_colon;
-                break;
-            }
-            return HTTP_PARSER_INVALID_HEADER;
+t_value:
+    if (ch == CR) {
+        r->cur_header_value_end = p;
+        state = s_cr;
+    } else if (ch == LF) {
+        r->cur_header_value_end = p;
+        state = s_crlf;
+    }
+    DISPATCH();
 
-        case s_spaces_after_colon:
-            if (ch == ' ')
-                break;
+t_cr:
+    if (ch == LF) {
+        state = s_crlf;
+        /* save the current HTTP header */
+        hd = malloc(sizeof(http_header_t));
+        hd->key_start = r->cur_header_key_start;
+        hd->key_end = r->cur_header_key_end;
+        hd->value_start = r->cur_header_value_start;
+        hd->value_end = r->cur_header_value_end;
 
-            state = s_value;
-            r->cur_header_value_start = p;
-            break;
+        list_add(&(hd->list), &(r->list));
+        DISPATCH();
+    }
+    return HTTP_PARSER_INVALID_HEADER;
 
-        case s_value:
-            if (ch == CR) {
-                r->cur_header_value_end = p;
-                state = s_cr;
-            }
+t_crlf:
+    if (ch == CR) {
+        state = s_crlfcr;
+    } else {
+        r->cur_header_key_start = p;
+        state = s_key;
+    }
+    DISPATCH();
 
-            if (ch == LF) {
-                r->cur_header_value_end = p;
-                state = s_crlf;
-            }
-            break;
-
-        case s_cr:
-            if (ch == LF) {
-                state = s_crlf;
-                /* save the current HTTP header */
-                hd = malloc(sizeof(http_header_t));
-                hd->key_start = r->cur_header_key_start;
-                hd->key_end = r->cur_header_key_end;
-                hd->value_start = r->cur_header_value_start;
-                hd->value_end = r->cur_header_value_end;
-
-                list_add(&(hd->list), &(r->list));
-                break;
-            }
-            return HTTP_PARSER_INVALID_HEADER;
-
-        case s_crlf:
-            if (ch == CR) {
-                state = s_crlfcr;
-            } else {
-                r->cur_header_key_start = p;
-                state = s_key;
-            }
-            break;
-
-        case s_crlfcr:
-            switch (ch) {
-            case LF:
-                goto done;
-            default:
-                return HTTP_PARSER_INVALID_HEADER;
-            }
-            break;
-        }
+t_crlfcr:
+    switch (ch) {
+    case LF:
+        goto done;
+    default:
+        return HTTP_PARSER_INVALID_HEADER;
     }
 
+again:
     r->pos = pi;
     r->state = state;
 
